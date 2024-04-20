@@ -1,4 +1,6 @@
 use anchor_lang::prelude::*;
+use anchor_spl::token::{mint_to, MintTo, Mint, TokenAccount, Token};
+use anchor_spl::associated_token::AssociatedToken;
 
 declare_id!("ADDeZSdphmJAuFUXq3eEAdfkZQzFu6Adkz9mpkRnypns");
 
@@ -20,6 +22,25 @@ pub mod anchor_counter {
         intro_account.message = message;
 
         msg!("Intro Account Created");
+
+        mint_to(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                MintTo {
+                    authority: ctx.accounts.mint.to_account_info(),
+                    to: ctx.accounts.user_ata.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info()
+                },
+                &[&[
+                    "mint".as_bytes(),
+                    &[ctx.bumps.mint]
+                ]]
+            ),
+            10*10^9
+        )?;
+
+        msg!("Minted 10 tokens to introducer");
+
         Ok(())
     }
 
@@ -50,6 +71,11 @@ pub mod anchor_counter {
         msg!("delete_intro invoked");
         Ok(())
     }
+
+    pub fn initialize_token_mint(_ctx: Context<InitializeMint>) -> Result<()> {
+        msg!("Token mint initialized");
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -66,6 +92,22 @@ pub struct AddIntro<'info> {
     #[account(mut)]
     pub initializer: Signer<'info>,
     pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+    #[account(
+        seeds = ["mint".as_bytes()],
+        bump,
+        mut
+    )]
+    pub mint: Account<'info, Mint>,
+    #[account(
+        init_if_needed,
+        payer = initializer,
+        associated_token::mint = mint,
+        associated_token::authority = initializer
+    )]
+    pub user_ata: Account<'info, TokenAccount>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub rent: Sysvar<'info, Rent>
 }
 
 #[derive(Accounts)]
@@ -97,6 +139,24 @@ pub struct DeleteIntro<'info> {
     #[account(mut)]
     pub initializer: Signer<'info>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct InitializeMint<'info> {
+    #[account(
+        init,
+        seeds = ["mint".as_bytes()],
+        bump,
+        payer = user,
+        mint::decimals = 9,
+        mint::authority = mint,
+    )]
+    pub mint: Account<'info, Mint>,
+    #[account(mut)]
+    pub user: Signer<'info>,
+    pub token_program: Program<'info, Token>,
+    pub rent: Sysvar<'info, Rent>,
+    pub system_program: Program<'info, System>
 }
 
 #[account]
