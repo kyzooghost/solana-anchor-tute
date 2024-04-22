@@ -1,167 +1,132 @@
-use anchor_lang::prelude::*;
-use anchor_spl::token::{mint_to, MintTo, Mint, TokenAccount, Token};
-use anchor_spl::associated_token::AssociatedToken;
+use anchor_lang::{
+    prelude::*,
+    system_program::{create_account, CreateAccount},
+};
+use anchor_spl::{
+    associated_token::AssociatedToken,
+    token_interface::{Mint, TokenInterface, TokenAccount}
+};
+use spl_tlv_account_resolution::state::ExtraAccountMetaList;
+use spl_transfer_hook_interface::instruction::{ExecuteInstruction, TransferHookInstruction};
 
-declare_id!("ADDeZSdphmJAuFUXq3eEAdfkZQzFu6Adkz9mpkRnypns");
+declare_id!("G5aztdE4DkiFxF6RFoNBAp6NDGmKh2sZxfSaC37xUeWD");
 
 #[program]
 pub mod anchor_counter {
     use super::*;
 
-    pub fn add_intro(
-        ctx: Context<AddIntro>,
-        name: String,
-        message: String
+    pub fn initialize_extra_account_meta_list(
+        ctx: Context<InitializeExtraAccountMetaList>,
     ) -> Result<()> {
-        msg!("Name: {}", name);
-        msg!("Message: {}", message);
 
-        let intro_account = &mut ctx.accounts.intro;
-        intro_account.introducer = ctx.accounts.initializer.key();
-        intro_account.name = name;
-        intro_account.message = message;
+        // The `addExtraAccountsToInstruction` JS helper function resolving incorrectly
+        let account_metas = vec![
+            
+        ];
 
-        msg!("Intro Account Created");
+        // calculate account size
+        let account_size = ExtraAccountMetaList::size_of(account_metas.len())? as u64;
+        // calculate minimum required lamports
+        let lamports = Rent::get()?.minimum_balance(account_size as usize);
 
-        mint_to(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                MintTo {
-                    authority: ctx.accounts.mint.to_account_info(),
-                    to: ctx.accounts.user_ata.to_account_info(),
-                    mint: ctx.accounts.mint.to_account_info()
+        let mint = ctx.accounts.mint.key();
+        let signer_seeds: &[&[&[u8]]] = &[&[
+            b"extra-account-metas",
+            &mint.as_ref(),
+            &[ctx.bumps.extra_account_meta_list],
+        ]];
+
+        // create ExtraAccountMetaList account
+        create_account(
+            CpiContext::new(
+                ctx.accounts.system_program.to_account_info(),
+                CreateAccount {
+                    from: ctx.accounts.payer.to_account_info(),
+                    to: ctx.accounts.extra_account_meta_list.to_account_info(),
                 },
-                &[&[
-                    "mint".as_bytes(),
-                    &[ctx.bumps.mint]
-                ]]
-            ),
-            10*10^9
+            )
+            .with_signer(signer_seeds),
+            lamports,
+            account_size,
+            ctx.program_id,
         )?;
 
-        msg!("Minted 10 tokens to introducer");
+        // initialize ExtraAccountMetaList account with extra accounts
+        ExtraAccountMetaList::init::<ExecuteInstruction>(
+            &mut ctx.accounts.extra_account_meta_list.try_borrow_mut_data()?,
+            &account_metas,
+        )?;
 
+        Ok(())
+
+    }
+
+    pub fn transfer_hook(ctx: Context<TransferHook>, amount: u64) -> Result<()> {
+        msg!("Hello Transfer Hook!");
         Ok(())
     }
 
-    pub fn update_intro(
-        ctx: Context<UpdateIntro>,
-        name: String,
-        message: String
+    // Any method without Context<> argument is the fallback
+    pub fn fallback<'info>(
+        program_id: &Pubkey,
+        accounts: &'info [AccountInfo<'info>],
+        data: &[u8],
     ) -> Result<()> {
-        msg!("update_intro invoked");
-        msg!("New Name: {}", name);
-        msg!("New Message: {}", message);
+        let instruction = TransferHookInstruction::unpack(data)?;
 
-        let intro_account = &mut ctx.accounts.intro;
+        // match instruction discriminator to transfer hook interface execute instruction  
+        // token2022 program CPIs this instruction on token transfer
+        match instruction {
+            TransferHookInstruction::Execute { amount } => {
+                let amount_bytes = amount.to_le_bytes();
 
-        msg!("Old Name: {}", intro_account.name);
-        msg!("Old Message: {}", intro_account.message);
-
-        intro_account.name = name;
-        intro_account.message = message;
-
-        msg!("Intro Updated");
-        Ok(())
-    }
-
-    pub fn delete_intro(
-        _ctx: Context<DeleteIntro>,
-    ) -> Result<()> {
-        msg!("delete_intro invoked");
-        Ok(())
-    }
-
-    pub fn initialize_token_mint(_ctx: Context<InitializeMint>) -> Result<()> {
-        msg!("Token mint initialized");
-        Ok(())
+                // invoke custom transfer hook instruction on our program
+                __private::__global::transfer_hook(program_id, accounts, &amount_bytes)
+            }
+            _ => return Err(ProgramError::InvalidInstructionData.into()),
+        }
     }
 }
 
 #[derive(Accounts)]
-#[instruction(name: String, message: String)]
-pub struct AddIntro<'info> {
-    #[account(
-        init, 
-        seeds = [initializer.key().as_ref()],
-        bump,
-        payer = initializer, 
-        space = 8 + 32 + 4 + name.len() + 4 + message.len()
-    )]
-    pub intro: Account<'info, IntroAccountState>,
+pub struct InitializeExtraAccountMetaList<'info> {
     #[account(mut)]
-    pub initializer: Signer<'info>,
-    pub system_program: Program<'info, System>,
-    pub token_program: Program<'info, Token>,
+    payer: Signer<'info>,
+    /// CHECK: ExtraAccountMetaList Account, must use these seeds
     #[account(
-        seeds = ["mint".as_bytes()],
-        bump,
-        mut
+        mut,
+        seeds = [b"extra-account-metas", mint.key().as_ref()], 
+        bump
     )]
-    pub mint: Account<'info, Mint>,
-    #[account(
-        init_if_needed,
-        payer = initializer,
-        associated_token::mint = mint,
-        associated_token::authority = initializer
-    )]
-    pub user_ata: Account<'info, TokenAccount>,
+    pub extra_account_meta_list: AccountInfo<'info>,
+    pub mint: InterfaceAccount<'info, Mint>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
-    pub rent: Sysvar<'info, Rent>
-}
-
-#[derive(Accounts)]
-#[instruction(name: String, message: String)]
-pub struct UpdateIntro<'info> {
-    #[account(
-        mut,
-        seeds = [initializer.key().as_ref()],
-        bump,
-        realloc = 8 + 32 + 4 + name.len() + 4 + message.len(),
-        realloc::payer = initializer,
-        realloc::zero = false
-    )]
-    pub intro: Account<'info, IntroAccountState>,
-    #[account(mut)]
-    pub initializer: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
 
+// Order of accounts matters for this struct.
+// The first 4 accounts are the accounts required for token transfer (source, mint, destination, owner)
+// Remaining accounts are the extra accounts required from the ExtraAccountMetaList account
+// These accounts are provided via CPI to this program from the token2022 program
 #[derive(Accounts)]
-pub struct DeleteIntro<'info> {
+pub struct TransferHook<'info> {
     #[account(
-        mut,
-        seeds = [initializer.key().as_ref()],
-        bump,
-        close = initializer
+        token::mint = mint, 
+        token::authority = owner,
     )]
-    pub intro: Account<'info, IntroAccountState>,
-    #[account(mut)]
-    pub initializer: Signer<'info>,
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-pub struct InitializeMint<'info> {
+    pub source_token: InterfaceAccount<'info, TokenAccount>,
+    pub mint: InterfaceAccount<'info, Mint>,
     #[account(
-        init,
-        seeds = ["mint".as_bytes()],
-        bump,
-        payer = user,
-        mint::decimals = 9,
-        mint::authority = mint,
+        token::mint = mint,
     )]
-    pub mint: Account<'info, Mint>,
-    #[account(mut)]
-    pub user: Signer<'info>,
-    pub token_program: Program<'info, Token>,
-    pub rent: Sysvar<'info, Rent>,
-    pub system_program: Program<'info, System>
-}
-
-#[account]
-pub struct IntroAccountState {
-    pub introducer: Pubkey,    // 32
-    pub name: String,       // 4 + len()
-    pub message: String, // 4 + len()
+    pub destination_token: InterfaceAccount<'info, TokenAccount>,
+    /// CHECK: source token account owner, can be SystemAccount or PDA owned by another program
+    pub owner: UncheckedAccount<'info>,
+    /// CHECK: ExtraAccountMetaList Account,
+    #[account(
+        seeds = [b"extra-account-metas", mint.key().as_ref()], 
+        bump
+    )]
+    pub extra_account_meta_list: UncheckedAccount<'info>,
 }
