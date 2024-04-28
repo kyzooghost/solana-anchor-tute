@@ -4,12 +4,16 @@ use anchor_lang::{
 };
 use anchor_spl::{
     associated_token::AssociatedToken,
-    token_interface::{Mint, TokenInterface, TokenAccount}
+    token_interface::{approve, Approve, Mint, TokenInterface, TokenAccount}
 };
-use spl_tlv_account_resolution::state::ExtraAccountMetaList;
+use spl_tlv_account_resolution::{
+    account::ExtraAccountMeta, 
+    seeds::Seed,
+    state::ExtraAccountMetaList
+};
 use spl_transfer_hook_interface::instruction::{ExecuteInstruction, TransferHookInstruction};
 
-declare_id!("FxpggTd7rdH8KBbMBgvoPAYZXUrFA9uqinjj3fzd55uv");
+declare_id!("2ubrPnruGQ4yr9UWRLHEPufzUfKorPhGG5QpHyNjmiBo");
 
 #[program]
 pub mod transfer_hook {
@@ -19,9 +23,20 @@ pub mod transfer_hook {
         ctx: Context<InitializeExtraAccountMetaList>,
     ) -> Result<()> {
 
+        // index 0-3 are the accounts required for token transfer (source, mint, destination, owner)
+        // index 4 is address of ExtraAccountMetaList account
         // The `addExtraAccountsToInstruction` JS helper function resolving incorrectly
         let account_metas = vec![
-            
+            // index 5, token program
+            ExtraAccountMeta::new_with_pubkey(&ctx.accounts.token_program.key(), false, false)?,
+            // index 6, boss
+            ExtraAccountMeta::new_with_seeds(
+                &[Seed::Literal {
+                    bytes: "boss".as_bytes().to_vec(),
+                }],
+                false, // is_signer
+                true,  // is_writable
+            )?,
         ];
 
         // calculate account size
@@ -62,7 +77,21 @@ pub mod transfer_hook {
     }
 
     pub fn transfer_hook(ctx: Context<TransferHook>, amount: u64) -> Result<()> {
-        msg!("Hello Transfer Hook!");
+        msg!("transfer_hook - Initiated");
+        
+        approve(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Approve {
+                    to: ctx.accounts.destination_token.to_account_info(),
+                    delegate: ctx.accounts.boss.to_account_info(),
+                    authority: ctx.accounts.owner.to_account_info(),
+                },
+            ),
+            amount
+        )?;
+
+        msg!("transfer_hook - Completed");
         Ok(())
     }
 
@@ -129,4 +158,11 @@ pub struct TransferHook<'info> {
         bump
     )]
     pub extra_account_meta_list: UncheckedAccount<'info>,
+    pub token_program: Interface<'info, TokenInterface>,
+    #[account(
+        mut,
+        seeds = [b"boss"], 
+        bump
+    )]
+    pub boss: SystemAccount<'info>,
 }
